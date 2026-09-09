@@ -41,6 +41,16 @@ SKIP_DIR_PARTS = {"Raw", "Clippings", ".git", ".obsidian", "node_modules", ".tra
 # Файлы правил и служебные корневые файлы: пишет человек, в графе знаний не участвуют.
 SKIP_NAMES = {"BOARD.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".ltm-vault"}
 
+# Файлы *.seed.md кладёт ltm_seed.py, когда такая страница уже есть в памяти.
+# Это временные файлы на разбор человеком, а не часть графа: ругаться на них
+# как на сироты и заготовки бессмысленно, это шум, в котором теряются
+# настоящие ошибки.
+SEED_SUFFIX = ".seed.md"
+
+
+def is_seed_file(p) -> bool:
+    return p.name.endswith(SEED_SUFFIX)
+
 # Служебные страницы, для которых orphan это норма.
 HUB_NAMES = {
     "index.md", "log.md", "current-priorities.md", "hot.md", "BOARD.md",
@@ -159,6 +169,9 @@ def collect_md(vault: Path) -> list[Path]:
     out = []
     for p in vault.rglob("*.md"):
         if SKIP_DIR_PARTS & set(p.relative_to(vault).parts[:-1]):
+            continue
+        # Временные файлы слияния seed: не часть графа, в проверки не берутся.
+        if is_seed_file(p):
             continue
         if p.is_symlink():
             continue
