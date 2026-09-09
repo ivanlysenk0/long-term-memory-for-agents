@@ -18,16 +18,16 @@ The next session starts by reading them.
 ## Quick start
 
 ```bash
-git clone https://github.com/<user>/<repo>.git
-cd <repo>
+git clone https://github.com/ivanlysenk0/long-term-memory-for-agents.git
+cd long-term-memory-for-agents
 ./install.sh
 ```
 
 Windows, PowerShell:
 
 ```powershell
-git clone https://github.com/<user>/<repo>.git
-cd <repo>
+git clone https://github.com/ivanlysenk0/long-term-memory-for-agents.git
+cd long-term-memory-for-agents
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
