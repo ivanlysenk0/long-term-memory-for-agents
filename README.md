@@ -45,7 +45,8 @@ skill/
 └── scripts/
     ├── ltm_detect.py     scans the machine before installing
     ├── ltm_init.py       install, adopt existing memory, wire to agents
-    └── ltm_doctor.py     health check for the vault
+    ├── ltm_doctor.py     health check for the vault
+    └── ltm_schedule.py   runs the check on a schedule
 install.sh                install: macOS, Ubuntu, Debian, Fedora, Arch
 install.ps1               install: Windows
 ```
@@ -107,10 +108,21 @@ python3 skill/scripts/ltm_doctor.py --vault ~/memory
 - stubs with no content
 - sessions whose knowledge has not been compiled yet
 
-Schedule it:
+Schedule it with one command:
 
+```bash
+python3 skill/scripts/ltm_schedule.py
 ```
-0 20 * * * python3 "<vault>/scripts/ltm_doctor.py" --all --quiet
+
+Default: **weekdays, 12:00**, weekends skipped. The script detects your OS and asks
+for confirmation before writing anything: Linux `cron`, macOS `launchd`,
+Windows `schtasks`.
+
+```bash
+python3 skill/scripts/ltm_schedule.py --hour 9      # different time
+python3 skill/scripts/ltm_schedule.py --everyday    # weekends too
+python3 skill/scripts/ltm_schedule.py --status      # what is scheduled now
+python3 skill/scripts/ltm_schedule.py --remove      # remove it
 ```
 
 ## Where the skill installs

@@ -28,6 +28,7 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 | `ltm_detect.py` | scan the machine: OS, editor, existing memory, conflicts |
 | `ltm_init.py` | install, adopt existing memory, wire into agents |
 | `ltm_doctor.py` | health check: 9 checks, ~1 second per 500 files |
+| `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
 
 ## Workflow
 
@@ -106,10 +107,26 @@ python3 scripts/ltm_doctor.py --all      # both steps
 
 ERROR gets fixed immediately. WARNING gets handled as the work goes.
 
-Schedule it:
+### Scheduling
+
+Do not leave scheduling to the user: the advice "add a line to crontab" never
+gets followed. Set it up right away, but **only with explicit consent**: this
+changes the system, not just the vault.
+
+```bash
+python3 scripts/ltm_schedule.py              # weekdays, 12:00, asks for confirmation
+python3 scripts/ltm_schedule.py --hour 9     # different time
+python3 scripts/ltm_schedule.py --everyday   # weekends too
+python3 scripts/ltm_schedule.py --status     # what is scheduled now
+python3 scripts/ltm_schedule.py --remove     # remove it
 ```
-0 20 * * * python3 "<vault>/scripts/ltm_doctor.py" --all --quiet
-```
+
+The mechanism follows the OS: Linux `cron`, macOS `launchd`, Windows `schtasks`.
+macOS uses `launchd` because cron is technically present there but Apple does not
+recommend it, and under privacy protection it fails silently.
+
+The installer offers scheduling itself, after the self-check passes. The
+`--schedule` and `--no-schedule` flags control it without prompting.
 
 ## Multi-project
 
