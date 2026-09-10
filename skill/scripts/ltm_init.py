@@ -20,6 +20,7 @@ it only adds what is missing.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -28,8 +29,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Провайдер -> имя файла правил, который читает его агент.
-# Спрашиваем у пользователя, не угадываем: у человека может стоять несколько сразу.
+# Provider -> the name of the rule file its agent reads.
+# We ask the user instead of guessing: a person may have several installed at once.
 PROVIDERS = {
     "claude": {"file": "CLAUDE.md", "label": "Claude Code"},
     "amp": {"file": "AGENTS.md", "label": "AMP Code"},
@@ -43,6 +44,9 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 
 created: list[str] = []
 skipped: list[str] = []
+# What exactly we did inside other people's projects. Needed for an honest removal:
+# a file we created is removed whole, someone else's file only loses the block.
+link_records: list[dict] = []
 
 
 def fm(title: str, project: str, ftype: str, tags: list[str]) -> str:
@@ -85,13 +89,13 @@ def ask_yes(prompt: str, default: bool = True) -> bool:
 
 
 def default_vault_path() -> Path:
-    # Без промежуточной папки: память кладётся прямо в домашний каталог.
-    # Раньше здесь было home/memory/long-term-memory-vault, и на Windows
-    # пользователь получал лишний уровень вложенности.
+    # No intermediate folder: the memory goes straight into the home directory.
+    # This used to be home/memory/long-term-memory-vault, and on Windows the
+    # user got an extra level of nesting.
     return Path.home() / "long-term-memory-vault"
 
 
-# ------------------------------------------------------------- диагностика
+# ------------------------------------------------------------- diagnostics
 
 def diagnose(vault: Path) -> None:
     print("=== Diagnostics ===")
@@ -120,7 +124,7 @@ def diagnose(vault: Path) -> None:
     print()
 
 
-# ------------------------------------------------------------- генерация
+# ------------------------------------------------------------- generation
 
 def make_project(vault: Path, project: str) -> None:
     pdir = vault / project
@@ -158,8 +162,8 @@ def make_project(vault: Path, project: str) -> None:
         "# Raw\n\nOnly a human puts material here. The agent reads it and never changes it.\n"
         "Text only: transcripts, excerpts, metadata. No video or audio here.\n")
 
-    # Слой Schema проекта. Без него правила расползаются по агентским файлам
-    # и через месяц расходятся между собой.
+    # The project Schema layer. Without it the rules spread across agent files
+    # and drift apart from each other within a month.
     write_once(pdir / "00-home" / "operations.md",
         fm(f"Vault Operations: {project}", project, "operations",
            ["workflow", "ingest", "query", "lint"]) +
@@ -214,7 +218,7 @@ def make_global_home(vault: Path, projects: list[str], providers: list[str] | No
 
     mi = gh / "master-index.md"
     if mi.is_file():
-        # Повторный запуск: не перезаписываем индекс, а дописываем недостающие проекты.
+        # A repeat run: we do not overwrite the index, we append the missing projects.
         text = mi.read_text(encoding="utf-8")
         missing = [p for p in projects if f"[[{p}/00-home/index" not in text]
         if missing:
@@ -254,8 +258,8 @@ def make_global_home(vault: Path, projects: list[str], providers: list[str] | No
         fm("Global journal", "global", "index", ["log"]) +
         f"# Global journal\n\n## {TODAY} init | memory deployed locally\n")
 
-    # Глобальный operations: правила ЖИВУТ ВНУТРИ памяти, а не в файле настройки
-    # машины. Иначе при копировании памяти на другую машину правила не поедут.
+    # The global operations file: the rules LIVE INSIDE the memory, not in a machine
+    # config file. Otherwise the rules do not travel when the memory is copied elsewhere.
     write_once(gh / "00-home" / "operations.md",
         fm("Vault Operations: global rules", "global", "operations",
            ["workflow", "ingest", "query", "lint"]) +
@@ -327,8 +331,8 @@ Create `<project>/sessions/YYYY-MM-DD_HHMM_<agent>_<topic>.md`, update
 `current-priorities.md` and `hot.md`, and append to `log.md`.
 """)
 
-    # Индекс глобального проекта. Без него знания общего уровня начинают
-    # перечисляться прямо в master-index, и он раздувается.
+    # The index of the global project. Without it, global knowledge starts being
+    # listed directly in master-index and that file bloats.
     write_once(gh / "00-home" / "index.md",
         fm("00-global-home: index", "global", "index", ["navigation", "index"]) +
         """# 00-global-home: index
@@ -499,10 +503,51 @@ Replace them with a comma, a colon, brackets or a full stop.
 """
 
 
+MANIFEST = ".ltm-install-manifest.json"
+
+
+def write_manifest(vault: Path, projects: list[str], providers: list[str]) -> None:
+    """Record what exactly the installation created.
+
+    Without this the removal acts on a guess: it cannot tell a `CLAUDE.md` we
+    created from one the person wrote themselves half a year ago.
+    The manifest is appended to, not rewritten: a second installation into the
+    same projects must not erase the memory of the first one.
+    """
+    p = vault / MANIFEST
+    data = {"version": 1, "installs": []}
+    if p.is_file():
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(old, dict) and isinstance(old.get("installs"), list):
+                data = old
+        except (ValueError, OSError):
+            pass
+
+    known = {(r["path"], r["action"]) for r in data.get("project_links", [])}
+    merged = list(data.get("project_links", []))
+    for rec in link_records:
+        if (rec["path"], rec["action"]) not in known:
+            merged.append(rec)
+
+    data["vault"] = str(vault)
+    data["project_links"] = merged
+    data["installs"].append({
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "projects": projects,
+        "providers": providers,
+        "created": len(created),
+    })
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"  WARNING: the manifest was not written ({e}). Removal will act on markers.")
+
+
 def install_doctor(vault: Path) -> None:
-    # Планировщик кладём рядом с доктором: без него регулярная проверка
-    # остаётся советом в тексте, который никто не выполнит.
-    for helper in ("ltm_schedule.py", "ltm_seed.py"):
+    # The scheduler goes next to the doctor: without it the regular check stays
+    # advice in a text that nobody follows.
+    for helper in ("ltm_schedule.py", "ltm_seed.py", "ltm_uninstall.py"):
         h_src = Path(__file__).resolve().parent / helper
         if not h_src.is_file():
             continue
@@ -533,7 +578,7 @@ def install_doctor(vault: Path) -> None:
     if os.name != "nt":
         dst.chmod(0o755)
 
-    # Windows: батник, чтобы доктор запускался двойным кликом и из cmd.
+    # Windows: a .bat file so the doctor runs from a double click and from cmd.
     if os.name == "nt":
         bat = vault / "scripts" / "ltm_doctor.bat"
         write_once(bat, f'@echo off\r\nchcp 65001 >nul\r\npython "%~dp0ltm_doctor.py" %*\r\n')
@@ -588,20 +633,23 @@ def link_project(project_dir: Path, vault: Path, providers: list[str]) -> list[s
         if target.is_file():
             text = target.read_text(encoding="utf-8", errors="replace")
             if MEMORY_BLOCK_START in text:
-                # Блок уже есть: обновляем его содержимое, остальной файл не трогаем.
+                # The block is already there: we update its content and leave the rest alone.
                 start = text.index(MEMORY_BLOCK_START)
                 end = text.index(MEMORY_BLOCK_END) + len(MEMORY_BLOCK_END) + 1
                 new = text[:start] + block + text[end:]
                 if new != text:
                     target.write_text(new, encoding="utf-8")
                     done.append(f"{target} (block updated)")
+                link_records.append({"path": str(target), "action": "block_updated"})
             else:
                 with target.open("a", encoding="utf-8") as fh:
                     fh.write("\n\n" + block)
                 done.append(f"{target} (block appended)")
+                link_records.append({"path": str(target), "action": "block_appended"})
         else:
             target.write_text(f"# {project_dir.name}\n\n" + block, encoding="utf-8")
             done.append(f"{target} (created)")
+            link_records.append({"path": str(target), "action": "created"})
     return done
 
 
@@ -615,7 +663,7 @@ def adopt_existing(vault: Path, providers: list[str]) -> list[str]:
         make_global_home(vault, projects, providers)
         notes.append("created 00-global-home/master-index.md, there was no entry point")
     else:
-        # Точка входа есть, но может не вести к правилам. Дописываем ссылку, текст не трогаем.
+        # The entry point exists but may not point to the rules. We append a link and leave the text alone.
         mi = vault / "00-global-home" / "master-index.md"
         txt = mi.read_text(encoding="utf-8", errors="replace")
         missing = [PROVIDERS[p]["file"] for p in providers if PROVIDERS[p]["file"] not in txt]
@@ -724,7 +772,7 @@ def choose_project_names(vault: Path, auto: bool = False) -> list[str]:
         tok = tok.strip()
         if not tok:
             continue
-        # Имя становится путём, поэтому убираем всё, что ломает файловую систему.
+        # The name becomes a path, so we strip everything that breaks the file system.
         safe = re.sub(r'[<>:"/\\|?*]', "-", tok).strip(". ")
         if safe:
             names.append(safe)
@@ -776,7 +824,7 @@ def verify(vault: Path, linked: list[str], providers: list[str]) -> bool:
     for prov in providers:
         f = PROVIDERS[prov]["file"]
         checks.append((f"rules {f} ({PROVIDERS[prov]['label']})", (vault / f).is_file()))
-    # Точка входа обязана вести к правилам, иначе агент их не найдёт.
+    # The entry point must lead to the rules, otherwise the agent will not find them.
     if mi.is_file():
         txt = mi.read_text(encoding="utf-8", errors="replace")
         checks.append(("master-index points to the rule files",
@@ -968,7 +1016,7 @@ def offer_seed(vault: Path, seed_file: str | None = None, auto_yes: bool = False
         print(f"To fill it later: python3 \"{seeder}\" --unpack <file> --vault \"{vault}\"")
         return
 
-    # Сначала показываем, что именно придёт, и только потом пишем.
+    # First we show what exactly will arrive, and only then we write.
     subprocess.run([sys.executable or "python3", str(seeder), "--unpack", str(src),
                     "--vault", str(vault), "--dry-run"])
     if not auto_yes:
@@ -1012,6 +1060,27 @@ def offer_schedule(vault: Path, auto_yes: bool = False) -> None:
         print(f"  python3 \"{sched}\"")
 
 
+def run_uninstall(extra: list[str]) -> int:
+    """Hand the work over to ltm_uninstall.py.
+
+    The removal logic stays in one place: a copy here would drift away from the
+    original fast, and the rollback would start leaving traces exactly when it
+    is relied on the most.
+    """
+    here = Path(__file__).resolve().parent
+    script = here / "ltm_uninstall.py"
+    if not script.is_file():
+        # The script may have survived only inside an already installed memory.
+        for base in (Path.home(), Path.home() / "Documents"):
+            for cand in base.glob("*/scripts/ltm_uninstall.py"):
+                script = cand
+                break
+    if not script.is_file():
+        print("There is no ltm_uninstall.py next to this script. Take it from the skill repository.")
+        return 1
+    return subprocess.call([sys.executable, str(script)] + extra)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Deploy the agent long-term memory")
     ap.add_argument("--path", help="path to the vault")
@@ -1035,9 +1104,25 @@ def main() -> int:
                     help="do not offer the schedule")
     ap.add_argument("--providers", metavar="LIST",
                     help="comma separated agents: claude, amp, gemini. Asks by default")
+    ap.add_argument("--uninstall", action="store_true",
+                    help="remove the memory and every trace of the installation")
     args = ap.parse_args()
 
     print("Deploying the agent long-term memory\n")
+
+    # The fork at the start. The second branch is needed first of all for testing:
+    # without a rollback the skill can be verified on a machine exactly once, and
+    # the second attempt already runs on top of the leftovers of the first one.
+    if args.uninstall:
+        return run_uninstall([])
+    if not args.yes and not args.check and not args.path and not args.adopt:
+        print("What do you want to do?")
+        print("  1. Install or update the memory")
+        print("  2. Remove everything this skill installed")
+        choice = ask("Number", "1").strip()
+        if choice == "2":
+            return run_uninstall([])
+        print()
 
     vault = Path(args.path).expanduser() if args.path else default_vault_path()
     if not args.path and not args.yes and not args.check:
@@ -1047,13 +1132,14 @@ def main() -> int:
     if args.check:
         return 0
 
-    # Провайдера НЕ угадываем: у человека может стоять несколько агентов сразу,
-    # и от выбора зависит и что кладём в память, и какие файлы искать в его проектах.
+    # We do NOT guess the provider: a person may have several agents installed, and
+    # the choice drives both what we put into the memory and which files to look for
+    # in their projects.
     if args.providers:
         providers = [p.strip().lower() for p in args.providers.split(",")
                      if p.strip().lower() in PROVIDERS]
     elif args.yes:
-        # Раньше здесь было ["claude", "amp"], и GEMINI.md молча не создавался.
+        # This used to be ["claude", "amp"], and GEMINI.md was silently not created.
         providers = list(PROVIDERS)
     else:
         print("Which agent do you use? You can pick several.")
@@ -1078,8 +1164,8 @@ def main() -> int:
     if args.projects:
         projects = [p.strip() for p in args.projects.split(",") if p.strip()]
     else:
-        # Никаких имён по умолчанию: раньше здесь появлялась папка "work",
-        # которой нет в каноне и которую пользователь не просил.
+        # No default names: a "work" folder used to appear here, which is not part
+        # of the canon and which the user never asked for.
         projects = choose_project_names(vault, auto=args.yes)
     if not projects:
         print("Without at least one project the memory makes no sense. Cancelled.")
@@ -1096,8 +1182,8 @@ def main() -> int:
     (vault / "scripts").mkdir(exist_ok=True)
 
     if args.adopt:
-        # Чужая память уже устроена как-то. Не переделываем её под эталон,
-        # а только дописываем то, без чего агент не сможет работать.
+        # Someone else's memory is already arranged somehow. We do not rebuild it to
+        # the reference shape, we only add what the agent cannot work without.
         print("\nAdopt mode: the existing memory is taken as is.")
         for note in adopt_existing(vault, providers):
             print(f"  {note}")
@@ -1107,7 +1193,7 @@ def main() -> int:
             make_project(vault, p)
 
     rules = make_rules(vault, projects)
-    # Один текст под разными именами: каждый агент читает своё имя файла.
+    # One text under different names: each agent reads its own file name.
     for prov in providers:
         write_once(vault / PROVIDERS[prov]["file"], rules)
     write_once(vault / "README.md",
@@ -1126,9 +1212,9 @@ def main() -> int:
     if args.link:
         link_targets = [t.strip() for t in args.link.split(",") if t.strip()]
     elif args.yes:
-        # Раньше в этой ветке подключение пропускалось совсем, и в рабочих
-        # проектах не появлялось правил: агент открывал проект и не знал,
-        # что память вообще существует. Теперь подключаем найденные проекты.
+        # This branch used to skip the wiring entirely, and no rules appeared in the
+        # working projects: the agent opened a project and had no idea the memory
+        # existed at all. Now we wire in the projects that were found.
         link_targets = [p["path"] for p in discover_projects(vault)]
         if link_targets:
             print(f"\nWiring the memory into the projects found: {len(link_targets)}")
@@ -1142,11 +1228,13 @@ def main() -> int:
             continue
         linked += link_project(pdir, vault, providers)
 
-    # Подключение это половина дела: если файл правил не появился,
-    # агент в проекте память не увидит. Проверяем явно.
+    # Wiring is half the job: if the rule file did not appear, the agent in the
+    # project will not see the memory. We check explicitly.
     if link_targets and not linked:
         print("  WARNING: no rule file was created in any project.")
         print("  Wire it by hand: ltm_init.py --link <path> --providers claude")
+
+    write_manifest(vault, projects, providers)
 
     print(f"\nFiles and folders created: {len(created)}")
     if skipped:
@@ -1156,12 +1244,12 @@ def main() -> int:
     if not args.no_verify:
         ok = verify(vault, linked, providers)
 
-    # Расписание предлагаем только когда установка действительно рабочая:
-    # ставить проверку на сломанную память бессмысленно.
+    # We offer the schedule only when the installation actually works: scheduling a
+    # check for a broken memory is pointless.
     if ok and not args.check and not args.no_obsidian and not args.yes:
         offer_obsidian()
 
-    # Наполнение предлагаем ДО расписания: сначала содержимое, потом уход за ним.
+    # We offer the content BEFORE the schedule: content first, then caring for it.
     if ok and not args.check and not args.no_seed:
         offer_seed(vault, seed_file=args.seed, auto_yes=bool(args.seed) and args.yes)
 

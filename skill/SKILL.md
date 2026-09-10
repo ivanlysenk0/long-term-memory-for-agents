@@ -30,6 +30,7 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 | `ltm_doctor.py` | health check: 9 checks, ~1 second per 500 files |
 | `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
 | `ltm_seed.py` | hands ready-made memory content to another person, as an encrypted file |
+| `ltm_uninstall.py` | removes the memory and every trace of the install, for repeat testing |
 
 ## Workflow
 
@@ -159,6 +160,48 @@ not an implementation limit, it is a property of handing over any file.
 
 The installer offers a seed after a successful self-check. The `--seed` and
 `--no-seed` flags control this without prompting.
+
+### 9. Removal: put the machine back as it was
+
+The installer asks this first, before detection:
+
+```
+What do you want to do?
+  1. Install or update the memory
+  2. Remove everything this skill installed
+```
+
+The second branch exists mainly to test the skill on different systems. Without
+a rollback the skill is tested on a machine exactly once, and the second attempt
+runs on top of the leftovers of the first, so it is unclear what you are testing.
+
+```bash
+python3 scripts/ltm_uninstall.py --survey     # show what was found, change nothing
+python3 scripts/ltm_uninstall.py --dry-run    # what would be removed
+python3 scripts/ltm_uninstall.py              # remove, with a confirmation word
+python3 scripts/ltm_uninstall.py --deep       # if the memory sits in an unusual place
+python3 scripts/ltm_uninstall.py --keep-vault # drop integrations, keep the memory
+```
+
+Five kinds of traces are removed: the memory itself, `<!-- ltm:start -->` blocks
+in project rule files, rule files created by the installer, the scheduler entry,
+and the skill in the agent directories.
+
+**Other people's files are left alone.** If `CLAUDE.md` existed in the project
+before the install, only our block is cut out and the file keeps its own text.
+The manifest `.ltm-install-manifest.json` inside the memory tells them apart:
+the installer records what it created and what it merely appended to.
+
+If there is no manifest, the script searches by the block marker and says plainly
+that it is acting on markers. It does not delete rule files in that case: without
+a manifest there is no way to prove a file is ours.
+
+**Confirmation by word, not by letter.** Deleting a memory is too expensive to
+fire from a stray keypress, so the user types `DELETE`. Use `--yes` for automated
+tests.
+
+When done, the script checks itself with a second search: if anything is left,
+it exits with code 1 and suggests running with `--deep`.
 
 ## Multi-project
 

@@ -47,7 +47,8 @@ skill/
     ├── ltm_init.py       install, adopt existing memory, wire to agents
     ├── ltm_doctor.py     health check for the vault
     ├── ltm_schedule.py   runs the check on a schedule
-    └── ltm_seed.py       hand ready-made memory content to another person
+    ├── ltm_seed.py       hand ready-made memory content to another person
+    └── ltm_uninstall.py  full removal of the memory and install traces
 install.sh                install: macOS, Ubuntu, Debian, Fedora, Arch
 install.ps1               install: Windows
 ```
@@ -166,6 +167,29 @@ human decides. The vault doctor skips those files, so they do not break checks.
 AES-256-GCM. GCM is deliberate: it detects a tampered file, not just hides the
 content. Send the password over a separate channel, never with the file. Access
 cannot be revoked once the file is handed over.
+
+## Removal: put the machine back as it was
+
+The installer asks this first: install, or remove everything it put in place.
+This exists mainly for testing on different systems, because without a rollback
+the skill is tested on a machine exactly once.
+
+```bash
+python3 skill/scripts/ltm_uninstall.py --survey     # show what was found
+python3 skill/scripts/ltm_uninstall.py --dry-run    # what would be removed
+python3 skill/scripts/ltm_uninstall.py              # remove
+python3 skill/scripts/ltm_uninstall.py --keep-vault # drop integrations, keep the memory
+```
+
+Everything goes: the memory, the blocks in project rule files, the scheduler
+entry, the skill in the agent directories.
+
+**Your own files survive.** If `CLAUDE.md` existed in the project before the
+install, only the memory block is cut out and your text stays. What the installer
+created is recorded in a manifest inside the memory.
+
+The action cannot be undone, so you type the word `DELETE`. There is no second
+copy of the memory.
 
 ## Where the skill installs
 
