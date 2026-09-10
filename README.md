@@ -46,7 +46,8 @@ skill/
     ├── ltm_detect.py     scans the machine before installing
     ├── ltm_init.py       install, adopt existing memory, wire to agents
     ├── ltm_doctor.py     health check for the vault
-    └── ltm_schedule.py   runs the check on a schedule
+    ├── ltm_schedule.py   runs the check on a schedule
+    └── ltm_seed.py       hand ready-made memory content to another person
 install.sh                install: macOS, Ubuntu, Debian, Fedora, Arch
 install.ps1               install: Windows
 ```
@@ -92,6 +93,12 @@ python3 skill/scripts/ltm_init.py --link ~/projects/my-app --providers claude,ge
 
 # health check
 python3 skill/scripts/ltm_doctor.py --vault ~/memory
+
+# pack memory content into an encrypted file for a teammate
+python3 skill/scripts/ltm_seed.py --pack team.ltmseed --projects infra,qa
+
+# merge such a file into your own memory
+python3 skill/scripts/ltm_seed.py --unpack team.ltmseed --dry-run
 ```
 
 ## Health check
@@ -124,6 +131,41 @@ python3 skill/scripts/ltm_schedule.py --everyday    # weekends too
 python3 skill/scripts/ltm_schedule.py --status      # what is scheduled now
 python3 skill/scripts/ltm_schedule.py --remove      # remove it
 ```
+
+## Handing memory to another person
+
+`ltm_seed.py` packs memory content into a single encrypted file and merges it
+into someone else's memory. Use it when a newcomer should start with the team's
+accumulated knowledge instead of an empty structure.
+
+```bash
+# owner: pack
+python3 skill/scripts/ltm_seed.py --pack team.ltmseed --projects infra,qa
+
+# teammate: see what would happen, change nothing
+python3 skill/scripts/ltm_seed.py --unpack team.ltmseed --dry-run
+
+# teammate: merge
+python3 skill/scripts/ltm_seed.py --unpack team.ltmseed
+```
+
+**What to include.** Without `--projects` the whole memory is packed, personal
+content included. The rule is simple: list projects explicitly, and only
+work-related ones. Health, money, family and relocation projects never go into
+a seed. Review the file list printed by `--pack` before sending.
+
+**Never archived** regardless of your choice: `.git` (it holds the full history,
+including things that were deleted once), `.obsidian`, caches, logs and the
+`.ltm-vault` marker.
+
+**Nothing is overwritten.** If a file already exists on the other side and
+differs, the seed version lands next to it with a `.seed.md` suffix and the
+human decides. The vault doctor skips those files, so they do not break checks.
+
+**Encryption:** the key comes from the password via scrypt, the data via
+AES-256-GCM. GCM is deliberate: it detects a tampered file, not just hides the
+content. Send the password over a separate channel, never with the file. Access
+cannot be revoked once the file is handed over.
 
 ## Where the skill installs
 

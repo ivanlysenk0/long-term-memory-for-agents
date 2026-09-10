@@ -75,12 +75,16 @@ foreach ($t in $Targets) {
     $dest = Join-Path $t.Path $Name
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item -Path (Join-Path $Src '*') -Destination $dest -Recurse -Force
+    # __pycache__ is left behind by runs inside the repo and would ship to the user.
+    Get-ChildItem -Path $dest -Filter '__pycache__' -Recurse -Directory -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "installed: $($t.Label) -> $dest"
 }
 
 # --- verify ------------------------------------------------------------------
 $first = Join-Path $Targets[0].Path $Name
-$need = @('SKILL.md','scripts\ltm_detect.py','scripts\ltm_init.py','scripts\ltm_doctor.py')
+$need = @('SKILL.md','scripts\ltm_detect.py','scripts\ltm_init.py',
+          'scripts\ltm_doctor.py','scripts\ltm_schedule.py','scripts\ltm_seed.py')
 $missing = $need | Where-Object { -not (Test-Path (Join-Path $first $_)) }
 if ($missing) { Fail "missing files: $($missing -join ', ')" }
 Write-Host "verify: all files present"

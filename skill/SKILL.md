@@ -29,6 +29,7 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 | `ltm_init.py` | install, adopt existing memory, wire into agents |
 | `ltm_doctor.py` | health check: 9 checks, ~1 second per 500 files |
 | `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
+| `ltm_seed.py` | hands ready-made memory content to another person, as an encrypted file |
 
 ## Workflow
 
@@ -127,6 +128,37 @@ recommend it, and under privacy protection it fails silently.
 
 The installer offers scheduling itself, after the self-check passes. The
 `--schedule` and `--no-schedule` flags control it without prompting.
+
+### 7. Filling memory with ready-made content
+
+An empty memory is useless to a newcomer: the agent reads the structure and finds
+nothing in it. `ltm_seed.py` solves that by shipping the content as one encrypted
+parcel.
+
+```bash
+python3 scripts/ltm_seed.py --pack team.ltmseed --projects infra,qa   # owner side
+python3 scripts/ltm_seed.py --unpack team.ltmseed --dry-run           # teammate, preview
+python3 scripts/ltm_seed.py --unpack team.ltmseed                     # teammate, merge
+```
+
+**The human picks the content, not you.** Without `--projects` the whole memory
+is packed, personal content included. Never build a seed without an explicit
+project list and without showing that list to the owner. Health, money, family
+and document projects never go into a seed.
+
+**Always `--dry-run` first.** It prints what would be added and where a conflict
+appears, and writes nothing.
+
+**Merging never overwrites.** The existing file stays, the seed version lands
+next to it with a `.seed.md` suffix. A human decides from there, not the agent.
+The doctor skips those files, so the check does not break.
+
+**Password over a separate channel.** And say it plainly: once handed over,
+access cannot be revoked, the file is already in someone else's hands. That is
+not an implementation limit, it is a property of handing over any file.
+
+The installer offers a seed after a successful self-check. The `--seed` and
+`--no-seed` flags control this without prompting.
 
 ## Multi-project
 
