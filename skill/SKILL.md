@@ -31,8 +31,51 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 | `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
 | `ltm_seed.py` | hands ready-made memory content to another person, as an encrypted file |
 | `ltm_uninstall.py` | removes the memory and every trace of the install, for repeat testing |
+| `ltm_version.py` | three versions at once: skill, memory, GitHub. Step 0 before any work |
 
 ## Workflow
+
+### 0. Version check, BEFORE any work with the memory
+
+The first thing you do when this skill opens. Do not skip it: the skill lives in
+three places and they drift apart unnoticed.
+
+```bash
+python3 scripts/ltm_version.py --json
+```
+
+The script finds the memory itself and returns three versions: the skill on
+disk, the scripts inside the memory, and the fresh version from GitHub. The
+network is optional: with no internet `remote` is `null`, and that is not a blocker.
+
+What to do with the answer:
+
+- `remote_drift: true`: a newer version exists in the repository. **Stop and tell
+  the person**, do not start working silently. In substance: "Your memory was
+  deployed by version X, the repository is already at Y. The current setup
+  differs from what the new version installs. Update now?"
+- `local_drift: true`: the scripts in the memory fell behind the skill. Same
+  question, no network involved.
+- both `false`: carry on, ask nothing.
+
+Once the person agrees you do it yourself, in exactly this order:
+
+```bash
+cd <repo clone> && git pull && ./install.sh                     # 1. the skill
+python3 scripts/ltm_init.py --update  --path <vault>            # 2. the scripts
+python3 scripts/ltm_init.py --migrate --path <vault> --dry-run  # 3. show
+python3 scripts/ltm_init.py --migrate --path <vault>            # 4. apply
+```
+
+Step 3 is mandatory and you show its output to the person BEFORE step 4.
+
+**Be honest about the limit.** The skill text is already in your context, and
+after `git pull` you still remember the old revision in this same session.
+Re-read `SKILL.md` from disk. If the workflow itself changed, say plainly
+"restart the session" instead of pretending everything was picked up.
+
+**Declining is a valid answer.** The person may say "work as is". Then you work
+with the current version and do not raise it again in this session.
 
 ### 1. Detect first, always
 
@@ -236,6 +279,25 @@ fills it in.
 **The typical case for an old install:** `ltm_uninstall.py` is missing from
 `<vault>/scripts/` entirely, because it was added later, and the doctor is a
 month old. One `--update` covers both.
+
+**Layer 3, the structure and rules inside the memory.** The most important and
+the least visible one. The rules file in the memory root defines HOW the agent
+works with the records, and the install never updates it.
+
+```
+python3 ltm_init.py --migrate --path <vault> --dry-run   always first
+python3 ltm_init.py --migrate --path <vault>             apply
+```
+
+- adds files that old installs never had
+- rewrites the rules file only if the person never edited it: checked against
+  the `rules_hash` fingerprint in the manifest, not guessed
+- leaves an edited file alone, placing the new version next to it as `.new`
+- never touches `knowledge/`, `sessions/`, `Raw/`
+
+**Never suggest "wipe the memory and reinstall".** `ltm_uninstall.py` is for
+testing on a clean machine, not for updating: it deletes the person's records.
+Updating always happens in place.
 
 ## Multi-project
 

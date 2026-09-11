@@ -171,7 +171,7 @@ cannot be revoked once the file is handed over.
 
 ## Updating to a new version
 
-The memory and the scripts are updated separately. Two different steps.
+The memory and the scripts are updated separately. Three different steps.
 
 **Step 1, the skill in the agent directory.** A repeat install is the update:
 
@@ -199,6 +199,35 @@ the rule files and any text of yours stay untouched. It prints the file list
 and asks for confirmation before writing, then runs the doctor right after.
 
 The same thing is in the menu without flags: option 2 when you run `ltm_init.py`.
+
+**Step 3, the structure and rules inside the memory.** This is the most important
+and the least visible part. The memory root holds a rules file (`CLAUDE.md`,
+`AGENTS.md`, `GEMINI.md`) that tells the agent how to work with your records:
+what to read first, where to save, how to name files. The install never updates
+it, so an agent can run for years on the rules of the version you started with.
+
+```bash
+python3 skill/scripts/ltm_init.py --migrate --dry-run   # look first
+python3 skill/scripts/ltm_init.py --migrate             # apply
+```
+
+What the migration does:
+
+- **adds files that old installs never had**: `00-global-home/00-home/index.md`,
+  `operations.md`, `pending-concepts.md` in projects
+- **updates the rules file if you never edited it.** How it knows: the install
+  records a fingerprint of the generated file in the manifest. Fingerprint
+  matches, you never touched it
+- **leaves the rules file alone if you did change it.** The new version is placed
+  next to it as `CLAUDE.md.new`, and comparing and carrying over is your call
+- **never touches your records**: `knowledge/`, `sessions/`, `Raw/` and any text
+  of yours stay exactly as they are
+
+The dry run prints the full list of changes and writes nothing. Always run it first.
+
+**You do not need to wipe the memory and reinstall.** `ltm_uninstall.py` was
+written for testing the skill on a clean machine, not as an update step: it
+deletes your records. Updating happens in place, with the three commands above.
 
 **How you learn it is time.** The doctor compares the version in the manifest
 with its own and warns when they drift apart:

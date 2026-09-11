@@ -12,6 +12,7 @@ Usage:
     python3 ltm_init.py                    interactive, asks questions
     python3 ltm_init.py --check            diagnostics only, changes nothing
     python3 ltm_init.py --update           update the scripts in an existing memory
+    python3 ltm_init.py --migrate          update structure and rules in place
     python3 ltm_init.py --version          skill version and the one in the memory
     python3 ltm_init.py --path DIR --projects a,b --yes    no questions
 
@@ -25,6 +26,7 @@ from __future__ import annotations
 __version__ = "1.1.0"
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,6 +51,11 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 
 created: list[str] = []
 skipped: list[str] = []
+# Dry run: write_once writes nothing and only collects the list in `planned`.
+# Needed for `--migrate --dry-run`: show the person exactly what would change
+# BEFORE anything touches their memory.
+DRY_RUN = False
+planned: list[str] = []
 # What exactly we did inside other people's projects. Needed for an honest removal:
 # a file we created is removed whole, someone else's file only loses the block.
 link_records: list[dict] = []
@@ -67,6 +74,9 @@ def write_once(path: Path, content: str) -> None:
     """Never overwrite an existing file: the memory matters more than the template."""
     if path.exists():
         skipped.append(str(path))
+        return
+    if DRY_RUN:
+        planned.append(str(path))
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -231,11 +241,15 @@ def make_global_home(vault: Path, projects: list[str], providers: list[str] | No
             lines = text.rstrip().splitlines()
             last_row = max((i for i, l in enumerate(lines) if l.startswith("| [[")), default=len(lines) - 1)
             lines[last_row + 1:last_row + 1] = add.splitlines()
-            mi.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            created.append(f"{mi} (+{len(missing)} projects)")
-        else:
-            skipped.append(str(mi))
-        return
+            if DRY_RUN:
+                planned.append(f"{mi} (+{len(missing)} projects)")
+            else:
+                mi.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                created.append(f"{mi} (+{len(missing)} projects)")
+    # There used to be a `return` here, so with an existing master-index the
+    # function bailed out early: `log.md`, `00-home/operations.md` and
+    # `00-home/index.md` never appeared in old installs. No early exit now,
+    # because `write_once` leaves existing files alone anyway.
 
     rows = "\n".join(
         ["| [[00-global-home/00-home/index\\|Global knowledge]] | Active | [[00-global-home/00-home/index]] |"]
@@ -597,6 +611,38 @@ def install_doctor(vault: Path) -> None:
 VAULT_SCRIPTS = ("ltm_doctor.py", "ltm_schedule.py", "ltm_seed.py", "ltm_uninstall.py")
 
 
+def rules_hash(text: str) -> str:
+    """Fingerprint of the generated rules file.
+
+    The migration needs it to tell a file the person never touched from one
+    they edited by hand. The first can be updated silently, the second must not.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def stamp_rules(vault: Path, providers: list[str], text: str) -> None:
+    p = vault / MANIFEST
+    data: dict = {"version": 1, "installs": []}
+    if p.is_file():
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(old, dict):
+                data = old
+        except (ValueError, OSError):
+            pass
+    h = rules_hash(text)
+    rules = data.get("rules_hash")
+    if not isinstance(rules, dict):
+        rules = {}
+    for prov in providers:
+        rules[PROVIDERS[prov]["file"]] = h
+    data["rules_hash"] = rules
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def stamp_version(vault: Path) -> None:
     """Record which version of the scripts currently sits inside the memory.
 
@@ -701,6 +747,154 @@ def update_scripts(vault: Path, auto_yes: bool = False) -> int:
         # and its output lands in the pipe ahead of our lines: it looks as if
         # the doctor had run before the update.
         sys.stdout.flush()
+        try:
+            subprocess.call([sys.executable, str(doctor), "--vault", str(vault), "--quiet"])
+        except OSError as e:
+            print(f"  could not run the doctor: {e}")
+    return 0
+
+
+def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) -> int:
+    """Bring the structure and rules of an existing memory up to the skill version.
+
+    Why this is separate from `--update`. That mode updates the executable
+    scripts, i.e. the tools. This one updates what the agent actually works by:
+    the rule files in the memory root and the structural files that simply did
+    not exist in older installs (`00-global-home/00-home/index.md`,
+    `operations.md`, `pending-concepts.md`). The rules define HOW the agent
+    treats the memory, and they are exactly what stayed on the version of the
+    first install for years: `write_once` silently skips an existing file.
+
+    User records are never touched. Only missing files are added, and a rule
+    file is rewritten only if the person never edited it, which is checked
+    against a fingerprint in the manifest rather than guessed.
+    """
+    global DRY_RUN
+    if not vault.is_dir():
+        print(f"No memory at {vault}. Nothing to migrate.")
+        return 1
+    if not (vault / "00-global-home").is_dir() and not (vault / ".ltm-vault").is_file():
+        print(f"{vault} does not look like our memory: no 00-global-home, no .ltm-vault.")
+        print("Check the path: ltm_init.py --migrate --path <vault>")
+        return 1
+
+    print(f"Memory: {vault}")
+    print(f"Skill version: {__version__}\n")
+
+    projects = sorted(d.name for d in vault.iterdir()
+                      if d.is_dir() and not d.name.startswith(".")
+                      and d.name not in ("scripts", "Clippings", "00-global-home")
+                      and (d / "00-home").is_dir())
+    providers = [p for p in PROVIDERS if (vault / PROVIDERS[p]["file"]).is_file()]
+    if not providers:
+        providers = ["claude"]
+    print(f"Projects found: {len(projects)}   Rule files: "
+          f"{', '.join(PROVIDERS[p]['file'] for p in providers)}\n")
+
+    # A dry pass: we generate exactly what the install would, but write_once
+    # only collects the list. That tells us what is missing without touching
+    # a single file.
+    planned.clear()
+    skipped.clear()
+    DRY_RUN = True
+    try:
+        make_global_home(vault, projects, providers)
+        for p in projects:
+            make_project(vault, p)
+    finally:
+        DRY_RUN = False
+    missing = sorted(set(planned))
+
+    # Rule files are handled separately: they cannot simply be appended to.
+    rules_text = make_rules(vault, projects)
+    want = rules_hash(rules_text)
+    stamps = {}
+    mp = vault / MANIFEST
+    if mp.is_file():
+        try:
+            data = json.loads(mp.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("rules_hash"), dict):
+                stamps = data["rules_hash"]
+        except (ValueError, OSError):
+            pass
+
+    fresh: list[Path] = []      # safe to rewrite, the person never edited it
+    edited: list[Path] = []     # edited or unknown: must not be touched
+    pending: list[Path] = []    # a .new already sits next to it, not resolved yet
+    for prov in providers:
+        f = vault / PROVIDERS[prov]["file"]
+        if not f.is_file():
+            continue
+        cur = rules_hash(f.read_text(encoding="utf-8", errors="replace"))
+        if cur == want:
+            continue                      # already current
+        known = stamps.get(PROVIDERS[prov]["file"])
+        if known and known == cur:
+            fresh.append(f)
+            continue
+        # If a .new with the same content already sits next to it, do not offer
+        # it again: otherwise the person sees the same warning forever.
+        new = f.with_suffix(f.suffix + ".new")
+        if new.is_file() and rules_hash(new.read_text(encoding="utf-8", errors="replace")) == want:
+            pending.append(f)
+        else:
+            edited.append(f)
+
+    if not missing and not fresh and not edited:
+        if pending:
+            print("The structure is current. Left to resolve by hand:")
+            for f in pending:
+                print(f"  {f.name}.new  next to your {f.name}")
+            print("\nCompare them, carry over what you need and delete the .new file.")
+            return 0
+        print("Structure and rules already match the current version. Nothing to migrate.")
+        return 0
+
+    print("--- What would change ---")
+    if missing:
+        print(f"\nAdd missing files: {len(missing)}")
+        for m in missing:
+            print(f"  + {Path(m).relative_to(vault)}")
+    if fresh:
+        print(f"\nUpdate rules (you never edited them): {len(fresh)}")
+        for f in fresh:
+            print(f"  ~ {f.name}")
+    if edited:
+        print(f"\nRules you changed by hand: {len(edited)}")
+        for f in edited:
+            print(f"  ! {f.name}: NOT touched, the new version goes next to it as {f.name}.new")
+    print("\nRecords in knowledge, sessions, Raw and any text of yours are not touched.")
+
+    if dry_run:
+        print("\nDry run: nothing changed.")
+        return 0
+    if not auto_yes and not ask_yes("\nApply?"):
+        print("Cancelled.")
+        return 0
+
+    created.clear()
+    make_global_home(vault, projects, providers)
+    for p in projects:
+        make_project(vault, p)
+
+    for f in fresh:
+        f.write_text(rules_text, encoding="utf-8")
+        print(f"  updated: {f.name}")
+    for f in edited:
+        new = f.with_suffix(f.suffix + ".new")
+        new.write_text(rules_text, encoding="utf-8")
+        print(f"  placed next to it: {new.name} (compare and carry over by hand)")
+
+    if fresh:
+        provs = [p for p in providers if (vault / PROVIDERS[p]["file"]) in fresh]
+        stamp_rules(vault, provs, rules_text)
+    stamp_version(vault)
+
+    print(f"\nFiles added: {len(created)}")
+    print("Done. Memory check:")
+    sys.stdout.flush()
+    doctor = vault / "scripts" / "ltm_doctor.py"
+    if doctor.is_file():
         try:
             subprocess.call([sys.executable, str(doctor), "--vault", str(vault), "--quiet"])
         except OSError as e:
@@ -1227,6 +1421,10 @@ def main() -> int:
                     help="remove the memory and every trace of the installation")
     ap.add_argument("--update", action="store_true",
                     help="update the scripts inside the memory to the skill version")
+    ap.add_argument("--migrate", action="store_true",
+                    help="update structure and rules of an existing memory, records untouched")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --migrate: only show what would change")
     ap.add_argument("--version", action="store_true",
                     help="show the skill version and the version inside the memory")
     args = ap.parse_args()
@@ -1248,14 +1446,27 @@ def main() -> int:
     if args.update:
         v = Path(args.path).expanduser() if args.path else default_vault_path()
         return update_scripts(v, auto_yes=args.yes)
+    if args.migrate:
+        v = Path(args.path).expanduser() if args.path else default_vault_path()
+        return migrate_vault(v, dry_run=args.dry_run, auto_yes=args.yes)
     if not args.yes and not args.check and not args.path and not args.adopt:
         print("What do you want to do?")
         print("  1. Install the memory")
         print("  2. Update the scripts of an existing memory to the skill version")
-        print("  3. Remove everything this skill installed")
+        print("  3. Update structure and rules of an existing memory")
+        print("  4. Remove everything this skill installed")
         choice = ask("Number", "1").strip()
-        if choice == "3":
+        if choice == "4":
             return run_uninstall([])
+        if choice == "3":
+            v = Path(ask("Where is the memory", str(default_vault_path()))).expanduser()
+            # Always a dry pass first: the person must see the list before
+            # anything touches their memory.
+            migrate_vault(v, dry_run=True)
+            if not ask_yes("\nApply these changes?"):
+                print("Cancelled.")
+                return 0
+            return migrate_vault(v, auto_yes=True)
         if choice == "2":
             v = Path(ask("Where is the memory", str(default_vault_path()))).expanduser()
             return update_scripts(v)
@@ -1333,6 +1544,7 @@ def main() -> int:
     # One text under different names: each agent reads its own file name.
     for prov in providers:
         write_once(vault / PROVIDERS[prov]["file"], rules)
+    stamp_rules(vault, providers, rules)
     write_once(vault / "README.md",
         fm("Long-term memory", "global", "meta", ["vault", "memory"]) +
         "# Agent long-term memory\n\n"
