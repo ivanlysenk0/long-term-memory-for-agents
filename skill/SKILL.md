@@ -28,10 +28,43 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 | `ltm_detect.py` | scan the machine: OS, editor, existing memory, conflicts |
 | `ltm_init.py` | install, adopt existing memory, wire into agents |
 | `ltm_doctor.py` | health check: 10 checks, ~1 second per 500 files |
+| `ltm_hooks.py` | Claude Code hooks: memory loads and saves itself |
 | `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
 | `ltm_seed.py` | hands ready-made memory content to another person, as an encrypted file |
 | `ltm_uninstall.py` | removes the memory and every trace of the install, for repeat testing |
 | `ltm_version.py` | three versions at once: skill, memory, GitHub. Step 0 before any work |
+
+
+## Claude Code hooks
+
+Without hooks the vault is just a folder: the agent starts from zero every
+session and everything said is lost when the context is compacted.
+
+```
+python3 scripts/ltm_hooks.py --status     what is installed now
+python3 scripts/ltm_hooks.py --dry-run    plan, no changes
+python3 scripts/ltm_hooks.py --install    install
+python3 scripts/ltm_hooks.py --uninstall  remove only our hooks
+```
+
+| Event | What it does |
+|-------|--------------|
+| `SessionStart` | loads memory into context; after compaction returns the dump |
+| `PreCompact` | saves the conversation before the context is compacted |
+| `SessionEnd` | safety net: catches `/clear` and exit |
+| `Stop` | commits and pushes the vault |
+
+Other people's hooks on the same events are left alone, and `settings.json` is
+backed up before any change. Hooks are read at session start: open a new session
+after installing.
+
+**Saving a session stays with the human.** `SessionEnd` only fires on an explicit
+end (`/clear`, `/resume`, quitting the app). If someone simply stops typing and
+leaves the window open, the event never fires. So the main path is asking
+"save the session", and the hook is only a safety net.
+
+Hooks do not decide what deserves `knowledge/` and never write pages there: a
+script cannot understand a conversation. It keeps the raw material and reminds.
 
 ## Workflow
 
