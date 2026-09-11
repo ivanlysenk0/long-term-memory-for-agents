@@ -51,8 +51,13 @@ python3 scripts/ltm_hooks.py --uninstall  remove only our hooks
 |-------|--------------|
 | `SessionStart` | loads memory into context; after compaction returns the dump |
 | `PreCompact` | saves the conversation before the context is compacted |
-| `SessionEnd` | safety net: catches `/clear` and exit |
-| `Stop` | commits and pushes the vault |
+
+`Stop` (commit and push) is set up separately when the vault is under git.
+
+**Saving a session stays with the human.** Hooks load memory and keep the raw
+material safe, but what deserves `knowledge/` is decided by a person asking to
+save the session. `SessionEnd` is deliberately not installed: it only fires on
+an explicit end, duplicates `PreCompact`, and contradicts Karpathy's method.
 
 Other people's hooks on the same events are left alone, and `settings.json` is
 backed up before any change. Hooks are read at session start: open a new session
