@@ -52,7 +52,15 @@ python3 scripts/ltm_hooks.py --uninstall  remove only our hooks
 | `SessionStart` | loads memory into context; after compaction returns the dump |
 | `PreCompact` | saves the conversation before the context is compacted |
 
-`Stop` (commit and push) is set up separately when the vault is under git.
+| `Stop` | marks knowledge candidates, commits and pushes the vault |
+
+`Stop` is installed only when the vault is under git.
+
+What `Stop` does, in order: it scans fresh session logs for signs of analysis
+(architecture, pattern, root cause, decision made, comparison) and on three
+hits appends a candidate to `pending-concepts.md`, then commits and pushes.
+It writes no pages: those are composed by the agent and the call is made by a
+human. On a clean tree the hook exits silently without touching the network.
 
 **Saving a session stays with the human.** Hooks load memory and keep the raw
 material safe, but what deserves `knowledge/` is decided by a person asking to
