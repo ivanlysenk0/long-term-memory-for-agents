@@ -457,3 +457,39 @@ All of this surfaced on a vault with 500 files and 15 projects.
 5. read the self-check block
 6. verify live: ask the agent how it reads memory
 7. offer a schedule for the doctor and mention backups
+
+## Amp
+
+Amp uses a plugin instead of hooks. Installed with a separate script:
+
+```
+python3 scripts/ltm_amp.py --dry-run
+python3 scripts/ltm_amp.py --install
+```
+
+The plugin goes to `~/.config/amp/plugins/ltm-vault/` (on Windows,
+`%USERPROFILE%\.config\amp\plugins\`) together with the vault scripts.
+
+| Amp event | What it does |
+|-----------|--------------|
+| `session.start` | syncs the vault and prepares the summary |
+| `agent.start` | delivers the summary into context on the first turn |
+| `agent.end` | marks knowledge candidates, commits and pushes |
+
+Why `agent.start` delivers the summary rather than `session.start`: in Amp's
+types `session.start` has no return value, it is a fire-and-forget event. Only
+`agent.start` can put text into context.
+
+There is no `PreCompact` equivalent and none is needed: Amp has no
+context-compaction event, and handlers receive the full thread history. Amp has
+no `session.end` event at all, which matches the canon: a human saves the
+session.
+
+## Gemini CLI
+
+Gemini CLI has no event hooks. Extensions can supply a rules file via
+`contextFileName`, and that is enough: memory is loaded because the rules tell
+the agent to read it. This is exactly how Karpathy's method works.
+
+There will be no automatic vault synchronisation: ask the agent to save and
+push changes, or set it up separately.
