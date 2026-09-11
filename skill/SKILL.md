@@ -304,6 +304,60 @@ python3 ltm_init.py --migrate --path <vault>             apply
 testing on a clean machine, not for updating: it deletes the person's records.
 Updating always happens in place.
 
+## What the skill writes into working projects
+
+The single most important text in the skill. The agent is opened inside a
+working project, not inside the store, so it will never see a rules file sitting
+in the store root. Everything needed has to be in the block that lands in the
+project's own `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
+
+The block follows Karpathy's canon: three layers and three operations.
+
+| What | Why |
+|------|-----|
+| Raw layer | `<project>/Raw/` is written by the human only; the agent reads, never edits |
+| Wiki layer | `knowledge/`, `00-home/` are maintained by the agent |
+| Schema layer | the block itself and `00-home/operations.md` |
+| Query operation | an answer starts at the project's `index.md`, not at a guess |
+| Ingest operation | raw material -> key points -> **pause and approval** -> pages |
+| Lint operation | orphans, broken links, stubs, stale claims |
+| Query -> Save | exactly what must be saved and what must not |
+| `index.md` | updated **the moment** a page is created, not at session end |
+| wiki links | path from the store root, `../` forbidden |
+
+**The block language is detected automatically** from the project's existing
+rule file: Ukrainian, Russian or English. The person already answered that
+question when they wrote their `CLAUDE.md`; asking twice is pointless.
+
+**The store directory name is matched, not guessed.** On disk the project may be
+`Sky-Kids-SMM-bot` while the store calls it `sky-kids-smm-bot`. The canon does
+not require identical names, so the skill matches ignoring case and separators,
+and asks the human when there is no unambiguous match.
+
+## Entry point: one project or several
+
+| Projects | Entry point | Why |
+|----------|-------------|-----|
+| one | `index.md` at the root | Karpathy's canon; no `00-global-home` is created |
+| several | `00-global-home/master-index.md` | a level above per-project indexes is needed |
+
+The master index must not also be called `index.md`: projects have their own
+`index.md`, and two different files sharing a name confuse agent and human alike.
+
+An existing entry point always wins over the calculation: renaming it would
+break every link pointing at it.
+
+## Boundaries: what the skill never does
+
+- **`--yes` does not wire projects.** It means "do not ask me about my own
+  memory", not "edit files I never named". Touching someone else's files always
+  requires an explicit `--link`
+- **A memory in a temporary directory is never written into real projects.**
+  A `/tmp` path disappears on reboot while the instruction "the memory lives
+  here" stays forever
+- **After install the written paths are verified.** A block can land
+  successfully yet point at nothing; the self-check then reports FAIL, not "done"
+
 ## Multi-project
 
 The canon requires "one vault, one project". Several projects in one vault is a

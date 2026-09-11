@@ -60,6 +60,10 @@ planned: list[str] = []
 # a file we created is removed whole, someone else's file only loses the block.
 link_records: list[dict] = []
 
+# Service directories of the store: they are not projects and must never be
+# offered as a match for a working project.
+SERVICE_DIRS = {"00-global-home", "scripts", "Clippings", ".git", ".obsidian"}
+
 
 def fm(title: str, project: str, ftype: str, tags: list[str]) -> str:
     tag_lines = "\n".join(f"  - {t}" for t in tags)
@@ -223,6 +227,64 @@ an inbound link from `index.md`, otherwise it is an orphan page and the agent ne
         fm(f"{project}: compilation queue", project, "index", ["pending"]) +
         "# Compilation queue\n\nSession logs whose concepts have not been extracted into `knowledge/` yet.\n"
         "Filled in by `ltm_doctor.py --scout`.\n")
+
+
+def entry_rel(vault: Path, projects: list[str] | None = None) -> str:
+    """Relative path of the store's entry point.
+
+    Karpathy's canon knows a single `index.md` per store. A master index above
+    per-project indexes is a forced extension for multi-project stores, and it
+    must not be called `index.md`: projects have their own `index.md`, and two
+    different files with the same name in one store confuse agent and human alike.
+
+    So: one project means the canonical `index.md` at the root, several projects
+    mean `00-global-home/master-index.md`.
+
+    An existing file always wins over the calculation: if the store is already
+    deployed, renaming its entry point would break every link pointing at it.
+    """
+    if (vault / "00-global-home" / "master-index.md").is_file():
+        return "00-global-home/master-index.md"
+    if (vault / "index.md").is_file():
+        return "index.md"
+    return "index.md" if len(projects or []) <= 1 else "00-global-home/master-index.md"
+
+
+def make_single_index(vault: Path, project: str, providers: list[str] | None = None) -> None:
+    """Entry point for a single-project store: `index.md` at the root.
+
+    `00-global-home` is deliberately not created here: the "knowledge shared
+    between projects" level is empty with one project, and an empty directory
+    in the store is noise the agent re-reads on every pass.
+    """
+    idx = vault / "index.md"
+    if idx.is_file():
+        return
+    write_once(idx,
+        fm("Index", project, "index", ["navigation", "index"]) +
+        "# Index\n\nEntry point of the long-term memory. Every request starts here.\n\n"
+        "## Before working with the memory\n\n"
+        f"Rules: [[{project}/00-home/operations|{project}/00-home/operations.md]]\n\n"
+        "## Project\n\n| Project | Status | Entry point |\n|---------|--------|-------------|\n"
+        f"| [[{project}/00-home/index\\|{project}]] | Active | [[{project}/00-home/index]] |\n\n"
+        "## Knowledge pages\n\n"
+        "One line per page: a link and a one-line summary. Updated the moment a\n"
+        "page is created, not at the end of the session: a page with no line here\n"
+        "cannot be found and is effectively lost.\n\n"
+        "## Authorship\n\n"
+        "The `agent` field answers who wrote it, `date` answers when.\n")
+
+    write_once(vault / "log.md",
+        fm("Journal", project, "index", ["log"]) +
+        f"# Journal\n\n## {TODAY} init | memory deployed locally\n")
+
+
+def make_entry(vault: Path, projects: list[str], providers: list[str] | None = None) -> None:
+    """Create the entry point according to the number of projects."""
+    if entry_rel(vault, projects) == "index.md":
+        make_single_index(vault, projects[0] if projects else "project", providers)
+    else:
+        make_global_home(vault, projects, providers)
 
 
 def make_global_home(vault: Path, projects: list[str], providers: list[str] | None = None) -> None:
@@ -811,7 +873,7 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
     skipped.clear()
     DRY_RUN = True
     try:
-        make_global_home(vault, projects, providers)
+        make_entry(vault, projects, providers)
         for p in projects:
             make_project(vault, p)
     finally:
@@ -905,7 +967,7 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
         return 0
 
     created.clear()
-    make_global_home(vault, projects, providers)
+    make_entry(vault, projects, providers)
     for p in projects:
         make_project(vault, p)
 
@@ -934,46 +996,152 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
     return 0
 
 
-MEMORY_BLOCK_START = "<!-- ltm:start -->"
-MEMORY_BLOCK_END = "<!-- ltm:end -->"
+# The block texts live in a separate module: they are long, and keeping three
+# language versions inside the installer means scrolling past them every time
+# you look for actual logic.
+try:
+    from ltm_blocks import (MEMORY_BLOCK_START, MEMORY_BLOCK_END,
+                            BLOCK_TEXT, DEFAULT_BLOCK_LANG)
+except ImportError:  # not started from the script directory
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ltm_blocks import (MEMORY_BLOCK_START, MEMORY_BLOCK_END,
+                            BLOCK_TEXT, DEFAULT_BLOCK_LANG)
 
 
-def memory_block(vault: Path, provider: str = "claude") -> str:
-    """The block inserted into the rule files of a working project.
+def detect_lang(project_dir: Path) -> str:
+    """The language the project's rules are written in: 'uk', 'ru' or 'en'.
 
-    Wrapped in markers so a repeat run updates it instead of adding copies."""
-    rules_file = PROVIDERS.get(provider, PROVIDERS["claude"])["file"]
-    return (
-        f"{MEMORY_BLOCK_START}\n"
-        "## Long-term memory\n\n"
-        "This is NOT this project's memory and not the agent's MEMORY.md file. It is a separate\n"
-        "file-based knowledge store, shared by every project on this machine.\n\n"
-        f"Memory directory: `{vault}`\n\n"
-        "How to approach it:\n"
-        f"1. rules for working with the memory: `{vault / rules_file}`\n"
-        f"2. entry point into the memory itself: `{vault / '00-global-home' / 'master-index.md'}`\n"
-        "3. then follow the links from the master-index: `<project>/00-home/index.md`,\n"
-        "   `knowledge/decisions/`, `knowledge/patterns/`, `current-priorities.md`, `hot.md`,\n"
-        "   recent files in `<project>/sessions/`\n\n"
-        "When to use it: questions about decisions made earlier, architecture, the cause of a bug,\n"
-        "anything already discussed. Do not answer 'I do not know' before walking this path.\n\n"
-        "What to record: new connections, a synthesis across sources, a comparison of approaches,\n"
-        "the root cause of a bug, an architectural conclusion. Do not record a plain fact lookup.\n\n"
-        "At the end of a session: a log in `<project>/sessions/`, update `log.md`.\n"
-        "Health check: `python3 " + str(vault / "scripts" / "ltm_doctor.py") + "`\n"
-        f"{MEMORY_BLOCK_END}\n"
-    )
+    The memory block must speak the same language as the rest of the rule file.
+    Otherwise the project ends up with a mix that is awkward for a human to read
+    and easy for an agent to mangle when editing.
+
+    We detect it from the existing rule file rather than asking: the person
+    already answered this question when they wrote their CLAUDE.md.
+    """
+    for fname in ALL_RULE_FILES:
+        f = project_dir / fname
+        if not f.is_file():
+            continue
+        try:
+            t = f.read_text(encoding="utf-8", errors="replace")[:20000]
+        except OSError:
+            continue
+        # Ignore a block we inserted ourselves, otherwise the language is
+        # detected from our own text instead of the person's.
+        if MEMORY_BLOCK_START in t and MEMORY_BLOCK_END in t:
+            t = t[:t.index(MEMORY_BLOCK_START)] + t[t.index(MEMORY_BLOCK_END):]
+        cyr = sum(1 for ch in t if "\u0400" <= ch <= "\u04ff")
+        lat = sum(1 for ch in t if ch.isascii() and ch.isalpha())
+        # A relative threshold, not an absolute one. A short Russian file of
+        # three lines used to be detected as English: it holds fewer than forty
+        # Cyrillic characters even though it contains no English at all.
+        if cyr == 0 or cyr * 4 < lat:
+            return "en"
+        uk_only = sum(t.count(ch) for ch in "їєґІЇЄҐ")
+        ru_only = sum(t.count(ch) for ch in "ыэъЫЭЪ")
+        if uk_only and not ru_only:
+            return "uk"
+        if ru_only and not uk_only:
+            return "ru"
+        low = " " + t.lower().replace("\n", " ") + " "
+        uk_words = sum(low.count(w) for w in (
+            " що ", " або ", " які ", " цей ", " лише ", " перед ", " треба ",
+            " робить ", " сервіс ", " бот ", " для ", " після ", " через "))
+        ru_words = sum(low.count(w) for w in (
+            " что ", " или ", " которые ", " этот ", " только ", " перед ",
+            " нужно ", " делает ", " сервис ", " бот ", " для ", " после ", " через "))
+        if uk_only > ru_only:
+            return "uk"
+        if ru_only > uk_only:
+            return "ru"
+        return "uk" if uk_words > ru_words else "ru"
+    return DEFAULT_BLOCK_LANG
 
 
-def link_project(project_dir: Path, vault: Path, providers: list[str]) -> list[str]:
+def memory_block(vault: Path, provider: str = "claude", project: str = "",
+                 lang: str = "uk", entry: str = "") -> str:
+    """The rules block for a working project's instruction file.
+
+    This is the single most important text in the whole skill: it is what the
+    agent opened inside a working project actually reads. The agent is never
+    opened inside the store, so it will never see a rules file sitting in the
+    store root. Everything needed has to be here.
+
+    The contents follow Karpathy's canon: three layers (Raw, Wiki, Schema) and
+    three operations (Ingest, Query, Lint). Without Ingest raw material in
+    `Raw/` never becomes knowledge; without Lint the base quietly fills up with
+    orphans and broken links.
+    """
+    entry = entry or entry_rel(vault)
+    p = project or "<project>"
+    T = BLOCK_TEXT[lang if lang in BLOCK_TEXT else "en"]
+    return T(vault, p, entry)
+
+
+def match_vault_project(project_dir: Path, vault: Path) -> str | None:
+    """Find the store directory matching this working project.
+
+    Names do not always line up: `Sky-Kids-SMM-bot` on disk, `sky-kids-smm-bot`
+    in the store. The canon does not require identical names, so guessing is not
+    allowed: put a non-existent directory into the block and the agent walks
+    into nothing.
+
+    Order: exact match, then a match ignoring case and separators.
+    Nothing found means None, and the caller asks the human.
+    """
+    name = project_dir.name
+
+    def norm(s: str) -> str:
+        return re.sub(r"[-_\s.]+", "", s).lower()
+
+    candidates = []
+    for d in sorted(vault.iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d.name in SERVICE_DIRS:
+            continue
+        candidates.append(d.name)
+    if name in candidates:
+        return name
+    target = norm(name)
+    hits = [c for c in candidates if norm(c) == target]
+    return hits[0] if len(hits) == 1 else None
+
+
+def link_project(project_dir: Path, vault: Path, providers: list[str],
+                 project: str = "", lang: str = "") -> list[str]:
     """Write a pointer to the memory into the rule files of a working project.
 
     A file is created only if the user picked that provider: a stray GEMINI.md in the
     project of someone who does not use Gemini is just clutter."""
+    # Guard against test runs. If the memory lives in a temporary directory this
+    # is a test, and such a path must never be written into real rule files:
+    # the directory disappears on reboot while the instruction "the memory lives
+    # here" stays forever and leads the agent nowhere.
+    vs = str(vault.resolve())
+    if vs.startswith(("/tmp/", "/var/tmp/", "/private/tmp/")) or "\\Temp\\" in vs:
+        print(f"  SKIPPED {project_dir}: the memory is in a temporary directory ({vault}).")
+        print("  This looks like a test run. Real rule files are left alone.")
+        return []
+
     done = []
+    # The block language comes from the project's existing rules: the person
+    # already answered that question when they wrote their file.
+    lang = lang or detect_lang(project_dir)
+    # The directory name inside the store, not the project folder name on disk:
+    # they do not always match, and a mistake here points the agent at a
+    # directory that does not exist.
+    if not project:
+        project = match_vault_project(project_dir, vault)
+        if not project:
+            print(f"  NOTE {project_dir.name}: no directory with that name in the store.")
+            names = sorted(d.name for d in vault.iterdir()
+                           if d.is_dir() and not d.name.startswith(".") and d.name not in SERVICE_DIRS)
+            print(f"    Store directories: {', '.join(names) or 'none'}")
+            project = ask(f"    Which store directory matches project {project_dir.name}?",
+                          project_dir.name)
+    entry = entry_rel(vault)
     for prov in providers:
         fname = PROVIDERS[prov]["file"]
-        block = memory_block(vault, prov)
+        block = memory_block(vault, prov, project=project, lang=lang, entry=entry)
         target = project_dir / fname
         if target.is_file():
             text = target.read_text(encoding="utf-8", errors="replace")
@@ -1005,7 +1173,7 @@ def adopt_existing(vault: Path, providers: list[str]) -> list[str]:
                       if d.is_dir() and not d.name.startswith(".")
                       and d.name not in ("scripts", "Clippings"))
     if not (vault / "00-global-home" / "master-index.md").is_file():
-        make_global_home(vault, projects, providers)
+        make_entry(vault, projects, providers)
         notes.append("created 00-global-home/master-index.md, there was no entry point")
     else:
         # The entry point exists but may not point to the rules. We append a link and leave the text alone.
@@ -1035,7 +1203,8 @@ def discover_projects(vault: Path, max_depth: int = 3) -> list[dict]:
                "Cargo.toml", "pom.xml", "build.gradle", "composer.json", "Gemfile",
                "CMakeLists.txt", "Makefile", "docker-compose.yml"]
     skip = {".cache", ".local", "Library", "AppData", "node_modules", ".npm", ".nvm",
-            "snap", "Applications", ".Trash", ".git", "venv", ".venv", "OrbStack"}
+            "snap", "Applications", ".Trash", ".git", "venv", ".venv", "OrbStack",
+            "Photos Library.photoslibrary", "Music", "Movies", "Pictures"}
     found, seen = [], set()
 
     def walk(d: Path, depth: int):
@@ -1060,10 +1229,29 @@ def discover_projects(vault: Path, max_depth: int = 3) -> list[dict]:
             if e.is_dir() and not e.is_symlink():
                 walk(e, depth + 1)
 
-    for root in [Path.home(), Path.home() / "projects", Path.home() / "dev",
-                 Path.home() / "work", Path.home() / "src", Path.home() / "Documents"]:
+    roots = [Path.home(), Path.home() / "projects", Path.home() / "dev",
+             Path.home() / "work", Path.home() / "src", Path.home() / "Documents",
+             Path.home() / "Developer", Path.home() / "repos", Path.home() / "code"]
+    # Cloud directories. Physically they sit on disk, so a project inside one is
+    # no different from a local project, but the usual home-directory walk skips
+    # them: on macOS they hide inside `Library`, which we deliberately avoid
+    # because of its thousands of service files.
+    cloud = [
+        Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs",  # iCloud Drive
+        Path.home() / "iCloud Drive",
+        Path.home() / "OneDrive",
+        Path.home() / "Dropbox",
+        Path.home() / "Google Drive",
+        Path.home() / "Yandex.Disk",
+    ]
+    for root in roots:
         if root.is_dir():
             walk(root, 1)
+    for root in cloud:
+        if root.is_dir():
+            # Inside a cloud folder we allow one level deeper: the usual nesting
+            # there looks like `Personal/AI/Automations/<project>`.
+            walk(root, 0)
     return sorted(found, key=lambda x: x["path"])
 
 
@@ -1161,18 +1349,22 @@ def verify(vault: Path, linked: list[str], providers: list[str]) -> bool:
     print("\n=== Self-check ===")
     ok = True
 
-    mi = vault / "00-global-home" / "master-index.md"
+    ent = entry_rel(vault)
+    mi = vault / ent
     checks = [
         ("memory directory", vault.is_dir()),
-        ("entry point master-index.md", mi.is_file()),
+        (f"entry point {ent}", mi.is_file()),
     ]
     for prov in providers:
         f = PROVIDERS[prov]["file"]
         checks.append((f"rules {f} ({PROVIDERS[prov]['label']})", (vault / f).is_file()))
-    # The entry point must lead to the rules, otherwise the agent will not find them.
-    if mi.is_file():
+    # The entry point must lead to the rules, but only in a multi-project store:
+    # that is where the pointer files sit at the root. A canonical single-project
+    # store deliberately has none, and demanding a link to them would fail the
+    # self-check on a perfectly standard setup.
+    if mi.is_file() and ent != "index.md":
         txt = mi.read_text(encoding="utf-8", errors="replace")
-        checks.append(("master-index points to the rule files",
+        checks.append(("entry point points to the rule files",
                        all(PROVIDERS[p]["file"] in txt for p in providers)))
     checks += [
         ("doctor ltm_doctor.py", (vault / "scripts" / "ltm_doctor.py").is_file()),
@@ -1181,6 +1373,37 @@ def verify(vault: Path, linked: list[str], providers: list[str]) -> bool:
     for label, res in checks:
         print(f"  {'ok  ' if res else 'FAIL'} {label}")
         ok = ok and res
+
+    # Verify what the skill wrote into someone else's files. A block can land
+    # successfully yet point at a directory that does not exist: the agent then
+    # silently fails to find the memory and the person notices a week later.
+    if link_records:
+        print("\n  Checking the paths written into projects:")
+        for rec in link_records:
+            pth = Path(rec["path"])
+            if not pth.is_file():
+                print(f"    FAIL rules file vanished: {pth}")
+                ok = False
+                continue
+            txt = pth.read_text(encoding="utf-8", errors="replace")
+            if MEMORY_BLOCK_START not in txt or MEMORY_BLOCK_END not in txt:
+                print(f"    FAIL block missing from file: {pth}")
+                ok = False
+                continue
+            block = txt[txt.index(MEMORY_BLOCK_START):txt.index(MEMORY_BLOCK_END)]
+            bad = []
+            for chunk in re.findall(r"`([^`]+)`", block):
+                c = chunk.strip()
+                # Only absolute paths are checked: relative ones resolve inside
+                # the store and the doctor validates those.
+                if c.startswith("/") or (len(c) > 2 and c[1] == ":" and c[2] in "\\/"):
+                    if not Path(c).exists():
+                        bad.append(c)
+            if bad:
+                print(f"    FAIL {pth}: path does not exist: {bad[0]}")
+                ok = False
+            else:
+                print(f"    ok   {pth}")
 
     doctor = vault / "scripts" / "ltm_doctor.py"
     if doctor.is_file():
@@ -1209,15 +1432,21 @@ def verify(vault: Path, linked: list[str], providers: list[str]) -> bool:
 def print_next_steps(vault: Path, providers: list[str] | None = None) -> None:
     providers = providers or ["claude"]
     doctor = vault / "scripts" / "ltm_doctor.py"
-    mi = vault / "00-global-home" / "master-index.md"
+    mi = vault / entry_rel(vault)
     print("\n=== What next ===")
     print("1. Check the memory right now:")
     print(f"   python3 \"{doctor}\"")
     print("2. Entry point into the memory (the agent opens it first):")
     print(f"   {mi}")
-    print("3. Rule files in the memory root:")
-    for prov in providers:
-        print(f"   {vault / PROVIDERS[prov]['file']}  ->  {PROVIDERS[prov]['label']}")
+    if any((vault / PROVIDERS[p]["file"]).is_file() for p in providers):
+        print("3. Pointer files in the memory root (in case of a session opened there):")
+        for prov in providers:
+            if (vault / PROVIDERS[prov]["file"]).is_file():
+                print(f"   {vault / PROVIDERS[prov]['file']}  ->  {PROVIDERS[prov]['label']}")
+    else:
+        print("3. The rules for working with the memory live in the instruction")
+        print("   files of your working projects. The agent reads them there,")
+        print("   not inside the store.")
     print("4. Global wiring, if you need it outside the selected projects:")
     for prov in providers:
         home_cfg = {"claude": "~/.claude/CLAUDE.md", "amp": "~/.config/amp/AGENTS.md",
@@ -1568,7 +1797,7 @@ def main() -> int:
         for note in adopt_existing(vault, providers):
             print(f"  {note}")
     else:
-        make_global_home(vault, projects, providers)
+        make_entry(vault, projects, providers)
         for p in projects:
             make_project(vault, p)
 
@@ -1593,12 +1822,19 @@ def main() -> int:
     if args.link:
         link_targets = [t.strip() for t in args.link.split(",") if t.strip()]
     elif args.yes:
-        # This branch used to skip the wiring entirely, and no rules appeared in the
-        # working projects: the agent opened a project and had no idea the memory
-        # existed at all. Now we wire in the projects that were found.
-        link_targets = [p["path"] for p in discover_projects(vault)]
-        if link_targets:
-            print(f"\nWiring the memory into the projects found: {len(link_targets)}")
+        # NEVER wire projects in automatically.
+        #
+        # This branch used to walk the machine, so `--yes` meant "silently append
+        # the block to the rule files of every project you can find". In practice
+        # that appended the block to 21 files across the machine, including other
+        # people's directories and backups, and while testing against a temporary
+        # directory it scattered a `/tmp` path into real working projects.
+        #
+        # `--yes` means "do not ask me about my own memory", not "edit files I
+        # never named". Touching someone else's files always requires an
+        # explicit `--link`.
+        print("\nNot wiring any projects: --yes requires an explicit --link.")
+        print("  Wire them later: ltm_init.py --link <path1>,<path2> --providers claude")
     else:
         link_targets = choose_projects(vault)
 
