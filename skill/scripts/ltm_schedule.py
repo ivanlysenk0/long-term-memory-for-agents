@@ -14,6 +14,8 @@ Nothing is installed without explicit consent from the user.
 
 from __future__ import annotations
 
+__version__ = "1.1.0"
+
 import os
 import platform
 import subprocess

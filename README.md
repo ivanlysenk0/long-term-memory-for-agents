@@ -104,7 +104,7 @@ python3 skill/scripts/ltm_seed.py --unpack team.ltmseed --dry-run
 
 ## Health check
 
-`ltm_doctor.py` runs nine checks in about a second over 500 files:
+`ltm_doctor.py` runs ten checks in about a second over 500 files:
 
 - missing or incomplete YAML frontmatter
 - malformed dates
@@ -115,6 +115,7 @@ python3 skill/scripts/ltm_seed.py --unpack team.ltmseed --dry-run
 - orphan pages with no inbound link
 - stubs with no content
 - sessions whose knowledge has not been compiled yet
+- scripts in the memory that fell behind the skill version
 
 Schedule it with one command:
 
@@ -167,6 +168,49 @@ human decides. The vault doctor skips those files, so they do not break checks.
 AES-256-GCM. GCM is deliberate: it detects a tampered file, not just hides the
 content. Send the password over a separate channel, never with the file. Access
 cannot be revoked once the file is handed over.
+
+## Updating to a new version
+
+The memory and the scripts are updated separately. Two different steps.
+
+**Step 1, the skill in the agent directory.** A repeat install is the update:
+
+```bash
+cd long-term-memory-for-agents
+git pull
+./install.sh          # Windows: powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Restart the agent afterwards, otherwise it keeps the old `SKILL.md` in process memory.
+
+**Step 2, the scripts inside the memory itself.** The installer deliberately
+leaves them alone: it is idempotent and overwrites nothing, so `<vault>/scripts/`
+stays on whatever version you started with. There is a separate mode for that:
+
+```bash
+python3 skill/scripts/ltm_init.py --update
+python3 skill/scripts/ltm_init.py --update --path ~/memory/long-term-memory-vault
+python3 skill/scripts/ltm_init.py --version    # which version is installed now
+```
+
+`--update` rewrites only the four executable files in `<vault>/scripts/`:
+the doctor, the scheduler, seed and uninstall. The structure, `knowledge/`,
+the rule files and any text of yours stay untouched. It prints the file list
+and asks for confirmation before writing, then runs the doctor right after.
+
+The same thing is in the menu without flags: option 2 when you run `ltm_init.py`.
+
+**How you learn it is time.** The doctor compares the version in the manifest
+with its own and warns when they drift apart:
+
+```
+Scripts: 1.0.0 in the memory, 1.1.0 in the skill. Update: ltm_init.py --update --path <vault>
+```
+
+The line is printed in `--quiet` too, because the scheduled run is the quiet one.
+The version lives in `.ltm-install-manifest.json`, field `scripts_version`.
+If the memory was installed before versions existed the field is empty: that is
+expected, the first `--update` fills it in.
 
 ## Removal: put the machine back as it was
 

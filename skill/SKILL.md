@@ -27,7 +27,7 @@ All in `scripts/`, Python 3.8+ only, no dependencies.
 |--------|---------|
 | `ltm_detect.py` | scan the machine: OS, editor, existing memory, conflicts |
 | `ltm_init.py` | install, adopt existing memory, wire into agents |
-| `ltm_doctor.py` | health check: 9 checks, ~1 second per 500 files |
+| `ltm_doctor.py` | health check: 10 checks, ~1 second per 500 files |
 | `ltm_schedule.py` | puts the check on a schedule: cron, launchd or Windows Scheduler |
 | `ltm_seed.py` | hands ready-made memory content to another person, as an encrypted file |
 | `ltm_uninstall.py` | removes the memory and every trace of the install, for repeat testing |
@@ -202,6 +202,40 @@ tests.
 
 When done, the script checks itself with a second search: if anything is left,
 it exits with code 1 and suggests running with `--deep`.
+
+## Updating a user who already has the skill
+
+Two layers, two different commands. Do not mix them up.
+
+**Layer 1, the skill in the agent directory.** `git pull` in the repository clone,
+then `./install.sh`. The installer does `cp -R`, i.e. it overwrites, so no separate
+update command exists. Restart the agent afterwards.
+
+**Layer 2, the scripts inside the memory.** The install deliberately does NOT
+update them: it is idempotent, and `write_once` / `install_doctor` skip an
+existing file. There is a separate mode for it:
+
+```
+python3 ltm_init.py --update                       default path
+python3 ltm_init.py --update --path <vault>        explicit path
+python3 ltm_init.py --update --path <vault> --yes  no confirmation
+python3 ltm_init.py --version --path <vault>       compare versions
+```
+
+Exactly four files in `<vault>/scripts/` get rewritten: `ltm_doctor.py`,
+`ltm_schedule.py`, `ltm_seed.py`, `ltm_uninstall.py`. Nothing else is touched:
+not the structure, not `knowledge/`, not the rule files, not any text. The list
+is printed and confirmed before writing, and the doctor runs right after.
+
+**The version lives in the manifest**, field `scripts_version` in
+`.ltm-install-manifest.json`. The doctor compares it with its own and warns on
+a mismatch; the line shows up in `--quiet` as well. A memory installed before
+versions existed has no such field: that is not an error, the first `--update`
+fills it in.
+
+**The typical case for an old install:** `ltm_uninstall.py` is missing from
+`<vault>/scripts/` entirely, because it was added later, and the doctor is a
+month old. One `--update` covers both.
 
 ## Multi-project
 

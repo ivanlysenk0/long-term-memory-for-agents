@@ -11,13 +11,18 @@ Works on Ubuntu, macOS and Windows. No dependencies, stdlib only.
 Usage:
     python3 ltm_init.py                    interactive, asks questions
     python3 ltm_init.py --check            diagnostics only, changes nothing
+    python3 ltm_init.py --update           update the scripts in an existing memory
+    python3 ltm_init.py --version          skill version and the one in the memory
     python3 ltm_init.py --path DIR --projects a,b --yes    no questions
 
 The script is idempotent: a repeat run does not overwrite existing files,
-it only adds what is missing.
+it only adds what is missing. That is exactly why updating the executable
+scripts is a separate `--update` mode: the install deliberately leaves them alone.
 """
 
 from __future__ import annotations
+
+__version__ = "1.1.0"
 
 import argparse
 import json
@@ -589,6 +594,120 @@ def install_doctor(vault: Path) -> None:
             sh.chmod(0o755)
 
 
+VAULT_SCRIPTS = ("ltm_doctor.py", "ltm_schedule.py", "ltm_seed.py", "ltm_uninstall.py")
+
+
+def stamp_version(vault: Path) -> None:
+    """Record which version of the scripts currently sits inside the memory.
+
+    Without it there is no way to answer "which version does the user have",
+    and the doctor cannot say "your scripts are older than the skill".
+    """
+    p = vault / MANIFEST
+    data: dict = {"version": 1, "installs": []}
+    if p.is_file():
+        try:
+            old = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(old, dict):
+                data = old
+        except (ValueError, OSError):
+            pass
+    data["scripts_version"] = __version__
+    data["scripts_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"  WARNING: version not written to the manifest ({e})")
+
+
+def installed_version(vault: Path) -> str | None:
+    p = vault / MANIFEST
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    v = data.get("scripts_version") if isinstance(data, dict) else None
+    return v if isinstance(v, str) else None
+
+
+def update_scripts(vault: Path, auto_yes: bool = False) -> int:
+    """Update the scripts inside the memory to the skill version.
+
+    This is a separate action, not part of the install. The installer
+    deliberately overwrites nothing (`write_once`), and that is exactly why
+    the scripts inside the memory stayed old forever: `install_doctor` saw an
+    existing file and skipped it. Here the overwrite is intentional and covers
+    ONLY the executable files in `<vault>/scripts/`. The structure, knowledge
+    pages, rule files and any memory text are not touched at all.
+    """
+    src_dir = Path(__file__).resolve().parent
+    dst_dir = vault / "scripts"
+
+    if not vault.is_dir():
+        print(f"No memory at {vault}. Nothing to update.")
+        print("Install first: python3 ltm_init.py")
+        return 1
+
+    have = installed_version(vault)
+    print(f"Memory: {vault}")
+    print(f"Skill script version: {__version__}")
+    print(f"Version inside the memory: {have or 'unknown, manifest has no stamp'}")
+
+    plan: list[tuple[Path, Path, str]] = []
+    for name in VAULT_SCRIPTS:
+        src = src_dir / name
+        dst = dst_dir / name
+        if not src.is_file():
+            print(f"  WARNING: {name} is missing next to the skill, skipping")
+            continue
+        if not dst.is_file():
+            plan.append((src, dst, "add, the file is not there yet"))
+        elif src.read_bytes() != dst.read_bytes():
+            plan.append((src, dst, "update, the content differs"))
+
+    if not plan:
+        print("\nEvery script in the memory already matches the skill. Nothing to do.")
+        stamp_version(vault)
+        return 0
+
+    print(f"\nFiles to be overwritten: {len(plan)}")
+    for _, dst, why in plan:
+        print(f"  {dst}  ({why})")
+    print("\nThe memory content does not change: only these executable files.")
+
+    if not auto_yes and not ask_yes("Update?"):
+        print("Cancelled.")
+        return 0
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for src, dst, _ in plan:
+        shutil.copy2(src, dst)
+        if os.name != "nt":
+            try:
+                dst.chmod(0o755)
+            except OSError:
+                pass
+        print(f"  updated: {dst}")
+
+    stamp_version(vault)
+    print(f"\nDone. The version inside the memory is now {__version__}.")
+
+    doctor = dst_dir / "ltm_doctor.py"
+    if doctor.is_file():
+        print("Memory check after the update:")
+        # Without the flush the child process writes straight to the descriptor
+        # and its output lands in the pipe ahead of our lines: it looks as if
+        # the doctor had run before the update.
+        sys.stdout.flush()
+        try:
+            subprocess.call([sys.executable, str(doctor), "--vault", str(vault), "--quiet"])
+        except OSError as e:
+            print(f"  could not run the doctor: {e}")
+    return 0
+
+
 MEMORY_BLOCK_START = "<!-- ltm:start -->"
 MEMORY_BLOCK_END = "<!-- ltm:end -->"
 
@@ -1106,7 +1225,18 @@ def main() -> int:
                     help="comma separated agents: claude, amp, gemini. Asks by default")
     ap.add_argument("--uninstall", action="store_true",
                     help="remove the memory and every trace of the installation")
+    ap.add_argument("--update", action="store_true",
+                    help="update the scripts inside the memory to the skill version")
+    ap.add_argument("--version", action="store_true",
+                    help="show the skill version and the version inside the memory")
     args = ap.parse_args()
+
+    if args.version:
+        v = Path(args.path).expanduser() if args.path else default_vault_path()
+        print(f"ltm_init.py {__version__}")
+        print(f"memory: {v}")
+        print(f"script version inside the memory: {installed_version(v) or 'unknown'}")
+        return 0
 
     print("Deploying the agent long-term memory\n")
 
@@ -1115,13 +1245,20 @@ def main() -> int:
     # the second attempt already runs on top of the leftovers of the first one.
     if args.uninstall:
         return run_uninstall([])
+    if args.update:
+        v = Path(args.path).expanduser() if args.path else default_vault_path()
+        return update_scripts(v, auto_yes=args.yes)
     if not args.yes and not args.check and not args.path and not args.adopt:
         print("What do you want to do?")
-        print("  1. Install or update the memory")
-        print("  2. Remove everything this skill installed")
+        print("  1. Install the memory")
+        print("  2. Update the scripts of an existing memory to the skill version")
+        print("  3. Remove everything this skill installed")
         choice = ask("Number", "1").strip()
-        if choice == "2":
+        if choice == "3":
             return run_uninstall([])
+        if choice == "2":
+            v = Path(ask("Where is the memory", str(default_vault_path()))).expanduser()
+            return update_scripts(v)
         print()
 
     vault = Path(args.path).expanduser() if args.path else default_vault_path()
@@ -1235,6 +1372,7 @@ def main() -> int:
         print("  Wire it by hand: ltm_init.py --link <path> --providers claude")
 
     write_manifest(vault, projects, providers)
+    stamp_version(vault)
 
     print(f"\nFiles and folders created: {len(created)}")
     if skipped:

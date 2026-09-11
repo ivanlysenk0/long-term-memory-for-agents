@@ -21,6 +21,8 @@ Exit code: 0 if there are no errors (warnings are allowed), 1 if there are error
 
 from __future__ import annotations
 
+__version__ = "1.1.0"
+
 import argparse
 import json
 import os
@@ -192,6 +194,39 @@ class Report:
 
     def warn(self, check: str, msg: str, file: str = ""):
         self.warnings.append({"check": check, "message": msg, "file": file})
+
+
+def check_scripts_version(vault: Path, rep: Report) -> None:
+    """Check 10: whether the scripts inside the memory fell behind the skill.
+
+    The installer deliberately does not overwrite the scripts inside the memory,
+    so they easily stay old for months. Silently this is invisible: the memory
+    is healthy, while the doctor itself is an old version and simply lacks part
+    of the checks.
+    """
+    rep.stats["scripts_version"] = __version__
+    p = vault / ".ltm-install-manifest.json"
+    if not p.is_file():
+        rep.stats["scripts_version_vault"] = None
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        rep.stats["scripts_version_vault"] = None
+        return
+    have = data.get("scripts_version") if isinstance(data, dict) else None
+    rep.stats["scripts_version_vault"] = have
+    if have is None:
+        rep.warn("scripts_version",
+                 "the manifest has no script version stamp. Update: "
+                 "python3 <skill>/scripts/ltm_init.py --update --path " + str(vault),
+                 ".ltm-install-manifest.json")
+        return
+    if have != __version__:
+        rep.warn("scripts_version",
+                 f"scripts in the memory are {have}, the skill is {__version__}. Update: "
+                 "python3 <skill>/scripts/ltm_init.py --update --path " + str(vault),
+                 ".ltm-install-manifest.json")
 
 
 def run_checks(vault: Path, files: list[Path], rep: Report) -> None:
@@ -472,6 +507,7 @@ def main() -> int:
     files = collect_md(vault)
     rep = Report()
     run_checks(vault, files, rep)
+    check_scripts_version(vault, rep)
 
     if args.json:
         print(json.dumps({
@@ -483,7 +519,14 @@ def main() -> int:
         return 1 if rep.errors else 0
 
     print(f"=== Memory check: {vault} ===")
-    print(f".md files in the graph: {rep.stats['files']}\n")
+    print(f".md files in the graph: {rep.stats['files']}")
+    # The version is printed even in --quiet: the scheduled run is exactly the
+    # quiet one, and a warning about stale scripts would be invisible there.
+    have = rep.stats.get("scripts_version_vault")
+    if have != __version__:
+        print(f"Scripts: {have or 'version unknown'} in the memory, {__version__} in the skill. "
+              f"Update: ltm_init.py --update --path {vault}")
+    print()
 
     if not args.quiet:
         for item in rep.errors:
