@@ -292,6 +292,11 @@ python3 ltm_init.py --migrate --path <vault>             apply
 - adds files that old installs never had
 - rewrites the rules file only if the person never edited it: checked against
   the `rules_hash` fingerprint in the manifest, not guessed
+- in a memory installed before fingerprints existed there is nothing to judge by.
+  The script then says "rules from an older version, whether you edited them is
+  unknown" and touches nothing: it drops a `.new` next to it and suggests a
+  `diff`. Never tell the person "you edited this by hand" with no fingerprint:
+  that would be a lie
 - leaves an edited file alone, placing the new version next to it as `.new`
 - never touches `knowledge/`, `sessions/`, `Raw/`
 

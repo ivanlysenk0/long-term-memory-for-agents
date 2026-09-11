@@ -620,6 +620,19 @@ def rules_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def rules_content_key(text: str) -> str:
+    """A fingerprint that ignores line order.
+
+    The install lists projects in the order the user gave them, while the
+    migration reads them off the filesystem, i.e. sorted. Two rule files with
+    identical content therefore hashed differently, and the migration offered
+    a `.new` that differed only by two swapped lines. Here we compare the set
+    of lines, not their order.
+    """
+    lines = sorted(l.strip() for l in text.splitlines() if l.strip())
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+
+
 def stamp_rules(vault: Path, providers: list[str], text: str) -> None:
     p = vault / MANIFEST
     data: dict = {"version": 1, "installs": []}
@@ -808,6 +821,7 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
     # Rule files are handled separately: they cannot simply be appended to.
     rules_text = make_rules(vault, projects)
     want = rules_hash(rules_text)
+    want_key = rules_content_key(rules_text)
     stamps = {}
     mp = vault / MANIFEST
     if mp.is_file():
@@ -819,15 +833,21 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
             pass
 
     fresh: list[Path] = []      # safe to rewrite, the person never edited it
-    edited: list[Path] = []     # edited or unknown: must not be touched
+    edited: list[Path] = []     # a stamp exists and differs: definitely edited
+    unknown: list[Path] = []    # no stamp: we cannot tell, and we do not invent
     pending: list[Path] = []    # a .new already sits next to it, not resolved yet
     for prov in providers:
         f = vault / PROVIDERS[prov]["file"]
         if not f.is_file():
             continue
-        cur = rules_hash(f.read_text(encoding="utf-8", errors="replace"))
+        cur_text = f.read_text(encoding="utf-8", errors="replace")
+        cur = rules_hash(cur_text)
         if cur == want:
             continue                      # already current
+        # Same rules, only a different order of the listed projects. Offering
+        # a .new here would bother the person over nothing.
+        if rules_content_key(cur_text) == want_key:
+            continue
         known = stamps.get(PROVIDERS[prov]["file"])
         if known and known == cur:
             fresh.append(f)
@@ -837,10 +857,15 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
         new = f.with_suffix(f.suffix + ".new")
         if new.is_file() and rules_hash(new.read_text(encoding="utf-8", errors="replace")) == want:
             pending.append(f)
+        elif known:
+            edited.append(f)          # a stamp exists but differs: they edited it
         else:
-            edited.append(f)
+            # The memory was installed by a version that wrote no fingerprints.
+            # Saying "you edited this by hand" here would be a lie: we do not know.
+            unknown.append(f)
 
-    if not missing and not fresh and not edited:
+    touched = edited + unknown
+    if not missing and not fresh and not touched:
         if pending:
             print("The structure is current. Left to resolve by hand:")
             for f in pending:
@@ -863,6 +888,13 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
         print(f"\nRules you changed by hand: {len(edited)}")
         for f in edited:
             print(f"  ! {f.name}: NOT touched, the new version goes next to it as {f.name}.new")
+    if unknown:
+        print(f"\nRules from an older version: {len(unknown)}")
+        print("  This memory was installed by a version that wrote no fingerprints,")
+        print("  so whether you edited these files is unknown. None of them is touched:")
+        for f in unknown:
+            print(f"  ? {f.name}: the new version goes next to it as {f.name}.new")
+        print("  Compare them (`diff CLAUDE.md CLAUDE.md.new`) and decide yourself.")
     print("\nRecords in knowledge, sessions, Raw and any text of yours are not touched.")
 
     if dry_run:
@@ -880,7 +912,7 @@ def migrate_vault(vault: Path, dry_run: bool = False, auto_yes: bool = False) ->
     for f in fresh:
         f.write_text(rules_text, encoding="utf-8")
         print(f"  updated: {f.name}")
-    for f in edited:
+    for f in touched:
         new = f.with_suffix(f.suffix + ".new")
         new.write_text(rules_text, encoding="utf-8")
         print(f"  placed next to it: {new.name} (compare and carry over by hand)")
